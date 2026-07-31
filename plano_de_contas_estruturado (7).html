@@ -9,8 +9,31 @@
     <!-- React & ReactDOM CDN -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <!-- Babel CDN for JSX -->
+    <!-- Babel CDN para JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Firebase JS SDK (v11) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.FirebaseSDK = {
+            initializeApp,
+            getAuth,
+            signInWithCustomToken,
+            signInAnonymously,
+            onAuthStateChanged,
+            getFirestore,
+            collection,
+            doc,
+            setDoc,
+            deleteDoc,
+            onSnapshot,
+            getDocs,
+            writeBatch
+        };
+    </script>
 
     <script>
         tailwind.config = {
@@ -46,7 +69,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useMemo, useEffect } = React;
+        const { useState, useMemo, useEffect, useRef } = React;
 
         // Componente de Ícones SVG Nativos
         const Icon = ({ name, className = "w-4 h-4" }) => {
@@ -93,14 +116,10 @@
                     return <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>;
                 case "alert-circle":
                     return <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>;
-                case "alert-triangle":
-                    return <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
                 case "search-x":
                     return <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="8" x2="14" y2="14"/><line x1="14" y1="8" x2="8" y2="14"/></svg>;
                 case "key":
                     return <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>;
-                case "bolt":
-                    return <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>;
                 default:
                     return null;
             }
@@ -278,17 +297,14 @@
         const defaultCategories = Object.keys(categoryPillStyles);
 
         function App() {
-            // Palavra-passe definida
             const storedPassword = "chb2026";
 
-            // Autenticação
             const [isAuthenticated, setIsAuthenticated] = useState(false);
             const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
             const [inputPassword, setInputPassword] = useState("");
             const [authError, setAuthError] = useState("");
             const [pendingAction, setPendingAction] = useState(null);
 
-            // Carregamento de dados local
             const [data, setData] = useState(() => {
                 try {
                     const saved = localStorage.getItem('chb_plano_contas');
@@ -302,11 +318,12 @@
                 return initialRawData;
             });
 
-            // Estado de Edição Direta na Linha (Inline Editing)
+            const [isCloudSynced, setIsCloudSynced] = useState(false);
+            const firebaseRef = useRef({ db: null, appId: 'plano-contas-chb-grupo' });
+
             const [editingId, setEditingId] = useState(null);
             const [inlineForm, setInlineForm] = useState({ code: "", name: "", category: "", desc: "" });
 
-            // Busca e Filtros
             const [search, setSearch] = useState("");
             const [selectedCategory, setSelectedCategory] = useState("TODAS");
             const [showOnlyDisabled, setShowOnlyDisabled] = useState(false);
@@ -315,7 +332,6 @@
             const [copiedCode, setCopiedCode] = useState(null);
             const [isAddingNewInline, setIsAddingNewInline] = useState(false);
 
-            // Persistência local no navegador
             useEffect(() => {
                 try {
                     localStorage.setItem('chb_plano_contas', JSON.stringify(data));
@@ -324,10 +340,90 @@
                 }
             }, [data]);
 
+            // Configuração e Conexão Firebase para Nuvem em Tempo Real
+            useEffect(() => {
+                let unsubscribeAuth = null;
+                let unsubscribeSnapshot = null;
+
+                const initCloud = async () => {
+                    if (!window.FirebaseSDK) return;
+
+                    const { initializeApp, getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } = window.FirebaseSDK;
+
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'plano-contas-chb-grupo';
+                    firebaseRef.current.appId = appId;
+
+                    let config = null;
+                    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                        try {
+                            config = JSON.parse(__firebase_config);
+                        } catch(e) {
+                            console.error("Erro ao carregar firebaseConfig:", e);
+                        }
+                    }
+
+                    if (!config || !config.apiKey) {
+                        setIsCloudSynced(false);
+                        return;
+                    }
+
+                    try {
+                        const app = initializeApp(config);
+                        const auth = getAuth(app);
+                        const db = getFirestore(app);
+                        firebaseRef.current.db = db;
+
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+
+                        unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+                            if (currentUser) {
+                                const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'planos_contas');
+                                
+                                unsubscribeSnapshot = onSnapshot(colRef, async (snapshot) => {
+                                    if (snapshot.empty) {
+                                        try {
+                                            const batch = writeBatch(db);
+                                            initialRawData.forEach(item => {
+                                                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'planos_contas', item.id);
+                                                batch.set(docRef, item);
+                                            });
+                                            await batch.commit();
+                                        } catch (err) {
+                                            console.error("Erro ao semear dados iniciais no Firestore:", err);
+                                        }
+                                    } else {
+                                        const cloudItems = [];
+                                        snapshot.forEach(docSnap => cloudItems.push(docSnap.data()));
+                                        setData(cloudItems);
+                                        setIsCloudSynced(true);
+                                    }
+                                }, (err) => {
+                                    console.error("Erro no listener do Firestore:", err);
+                                    setIsCloudSynced(false);
+                                });
+                            }
+                        });
+                    } catch (err) {
+                        console.error("Erro ao inicializar Firebase:", err);
+                        setIsCloudSynced(false);
+                    }
+                };
+
+                initCloud();
+
+                return () => {
+                    if (unsubscribeAuth) unsubscribeAuth();
+                    if (unsubscribeSnapshot) unsubscribeSnapshot();
+                };
+            }, []);
+
             const activeItemsCount = useMemo(() => data.filter(i => i.active).length, [data]);
             const inactiveItemsCount = useMemo(() => data.filter(i => !i.active).length, [data]);
 
-            // Exigir autenticação antes de executar qualquer ação
             const requireAdmin = (actionCallback) => {
                 if (isAuthenticated) {
                     actionCallback();
@@ -354,7 +450,6 @@
                 }
             };
 
-            // Filter base data
             const filteredData = useMemo(() => {
                 let result = data.filter(item => {
                     const matchesStatus = showOnlyDisabled ? !item.active : item.active;
@@ -378,7 +473,24 @@
                 });
             }, [data, search, selectedCategory, showOnlyDisabled, sortOption]);
 
-            // Iniciar edição direta do item
+            const saveToFirestore = async (item) => {
+                const { db, appId } = firebaseRef.current;
+                if (db && window.FirebaseSDK) {
+                    const { doc, setDoc } = window.FirebaseSDK;
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'planos_contas', item.id);
+                    await setDoc(docRef, item);
+                }
+            };
+
+            const removeFromFirestore = async (id) => {
+                const { db, appId } = firebaseRef.current;
+                if (db && window.FirebaseSDK) {
+                    const { doc, deleteDoc } = window.FirebaseSDK;
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'planos_contas', id);
+                    await deleteDoc(docRef);
+                }
+            };
+
             const startInlineEdit = (item) => {
                 requireAdmin(() => {
                     setEditingId(item.id);
@@ -391,14 +503,12 @@
                 });
             };
 
-            // Cancelar edição
             const cancelInlineEdit = () => {
                 setEditingId(null);
                 setIsAddingNewInline(false);
             };
 
-            // Salvar edição direta
-            const saveInlineEdit = (id) => {
+            const saveInlineEdit = async (id) => {
                 if (!inlineForm.code.trim() || !inlineForm.name.trim()) return;
 
                 if (id === 'NEW') {
@@ -411,44 +521,44 @@
                         active: true
                     };
                     setData(prev => [newItem, ...prev]);
+                    if (isCloudSynced) await saveToFirestore(newItem);
                     setIsAddingNewInline(false);
                 } else {
-                    setData(prev => prev.map(item => {
-                        if (item.id === id) {
-                            return {
-                                ...item,
-                                code: inlineForm.code.trim(),
-                                name: inlineForm.name.trim(),
-                                category: inlineForm.category,
-                                desc: inlineForm.desc.trim()
-                            };
-                        }
-                        return item;
-                    }));
+                    const target = data.find(i => i.id === id);
+                    if (!target) return;
+
+                    const updated = {
+                        ...target,
+                        code: inlineForm.code.trim(),
+                        name: inlineForm.name.trim(),
+                        category: inlineForm.category,
+                        desc: inlineForm.desc.trim()
+                    };
+
+                    setData(prev => prev.map(item => item.id === id ? updated : item));
+                    if (isCloudSynced) await saveToFirestore(updated);
                     setEditingId(null);
                 }
             };
 
-            // Alternar status ativo/inativo
             const toggleStatus = (id) => {
-                requireAdmin(() => {
-                    setData(prev => prev.map(item => {
-                        if (item.id === id) {
-                            return { ...item, active: !item.active };
-                        }
-                        return item;
-                    }));
+                requireAdmin(async () => {
+                    const target = data.find(i => i.id === id);
+                    if (!target) return;
+                    const updated = { ...target, active: !target.active };
+
+                    setData(prev => prev.map(item => item.id === id ? updated : item));
+                    if (isCloudSynced) await saveToFirestore(updated);
                 });
             };
 
-            // Remover item diretamente
             const deleteItem = (id) => {
-                requireAdmin(() => {
+                requireAdmin(async () => {
                     setData(prev => prev.filter(item => item.id !== id));
+                    if (isCloudSynced) await removeFromFirestore(id);
                 });
             };
 
-            // Iniciar nova conta diretamente na tabela
             const startNewInlineAccount = () => {
                 requireAdmin(() => {
                     setShowOnlyDisabled(false);
@@ -464,10 +574,25 @@
             };
 
             const resetTable = () => {
-                requireAdmin(() => {
+                requireAdmin(async () => {
                     if (confirm("Deseja restaurar as contas originais de fábrica?")) {
                         setData(initialRawData);
                         localStorage.removeItem('chb_plano_contas');
+
+                        const { db, appId } = firebaseRef.current;
+                        if (db && window.FirebaseSDK) {
+                            const { collection, doc, writeBatch, getDocs } = window.FirebaseSDK;
+                            const batch = writeBatch(db);
+                            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'planos_contas');
+                            const snapshot = await getDocs(colRef);
+                            snapshot.forEach(d => batch.delete(d.ref));
+
+                            initialRawData.forEach(item => {
+                                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'planos_contas', item.id);
+                                batch.set(docRef, item);
+                            });
+                            await batch.commit();
+                        }
                     }
                 });
             };
@@ -521,6 +646,12 @@
                                         <span className="bg-indigo-500/20 text-indigo-300 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-indigo-500/30">
                                             {data.length} Contas
                                         </span>
+                                        {isCloudSynced && (
+                                            <span className="bg-emerald-500/20 text-emerald-300 text-[11px] font-bold px-2.5 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1.5">
+                                                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                                                ● Sincronizado em Tempo Real
+                                            </span>
+                                        )}
                                     </div>
                                     <p className="text-xs text-slate-400 mt-0.5">
                                         Relação das Contas Contábeis - Grupo CHB &bull; Rev. 28.07.2026
